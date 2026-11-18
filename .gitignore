@@ -1,0 +1,31 @@
+# Local credentials and secret-bearing config
+.env
+.env.*
+!.env.example
+.envrc
+.npmrc
+.netrc
+.pypirc
+*.pem
+*.key
+*.p12
+*.pfx
+**/*credentials*
+**/*secret*
+**/secrets/
+**/credentials/
+**/.ssh/
+**/id_rsa
+**/id_ecdsa
+**/id_ed25519
+**/id_dsa
+
+# Local Kane evidence and StillHere run artifacts
+.stillhere/runs/
+.testmuai/evidence/
+*.evidence
+*.log
+
+# Local dependencies and OS metadata
+node_modules/
+.DS_Store

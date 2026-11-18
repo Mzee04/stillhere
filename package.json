@@ -1,0 +1,13 @@
+{
+  "name": "stillhere",
+  "version": "0.1.0",
+  "description": "Kane CLI state-recovery verification loop for browser journeys",
+  "type": "module",
+  "scripts": {
+    "start": "node cli.mjs demo",
+    "demo:loop": "node cli.mjs demo-loop",
+    "demo:reset": "node scripts/reset-demo.mjs",
+    "loop": "node cli.mjs loop",
+    "test": "node --test"
+  }
+}

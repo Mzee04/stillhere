@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f5f3ee" />
+    <meta name="description" content="StillHere verifies that checkout state survives browser Back and Refresh." />
+    <title>StillHere — checkout that remembers</title>
+    <link rel="stylesheet" href="/styles.css" />
+    <script src="/shop.js" defer></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="StillHere home">
+        <span class="brand-mark" aria-hidden="true"><span></span><span></span></span>
+        <span>stillhere<span class="brand-period">.</span></span>
+      </a>
+      <div class="topbar-center"><span class="live-dot"></span> SAMPLE SHOP <span class="topbar-divider">/</span> STATE RECOVERY JOURNEY</div>
+      <button class="demo-reset" id="reset-demo" type="button"><span class="reset-icon">↺</span> Reset demo</button>
+    </header>
+
+    <main class="page-shell">
+      <section class="intro-row">
+        <div>
+          <p class="eyebrow"><span class="eyebrow-line"></span> A browser recovery check</p>
+          <h1>Does checkout <em>remember?</em></h1>
+          <p class="intro-copy">Add an item, enter your details, leave the page, come back. The order should still be here.</p>
+        </div>
+        <div class="run-chip"><span class="run-chip-icon">↻</span><span><b>Journey 01</b><small>Back · Refresh · Return</small></span></div>
+      </section>
+
+      <div class="layout-grid">
+        <section class="shop-card" aria-label="Sample shop checkout">
+          <div id="app" aria-live="polite"></div>
+        </section>
+
+        <aside class="side-rail">
+          <section class="check-card">
+            <div class="card-heading">
+              <div><p class="eyebrow small">THE JOURNEY</p><h2>What we check</h2></div>
+              <span class="sequence-badge">01—04</span>
+            </div>
+            <ol class="journey-list">
+              <li class="journey-item"><span class="journey-number">01</span><span class="journey-copy"><b>Add to cart</b><small>One Sonder travel mug</small></span><span class="journey-state" data-state="cart">○</span></li>
+              <li class="journey-item"><span class="journey-number">02</span><span class="journey-copy"><b>Enter details</b><small>Name, email, delivery</small></span><span class="journey-state" data-state="contact">○</span></li>
+              <li class="journey-item"><span class="journey-number">03</span><span class="journey-copy"><b>Go back</b><small>Return from product details</small></span><span class="journey-state" data-state="back">○</span></li>
+              <li class="journey-item"><span class="journey-number">04</span><span class="journey-copy"><b>Refresh</b><small>Review step stays in place</small></span><span class="journey-state" data-state="refresh">○</span></li>
+            </ol>
+            <div class="test-note"><span class="note-spark">✳</span><p>Kane runs this same journey in a real browser, then reports exactly what disappeared.</p></div>
+          </section>
+
+          <section class="state-card">
+            <div class="state-card-heading"><span class="state-dot"></span><span>SESSION STATE</span><span class="mono-tag">LOCAL</span></div>
+            <div class="state-row"><span>Cart</span><b id="state-cart">Empty</b></div>
+            <div class="state-row"><span>Checkout step</span><b id="state-step">Product</b></div>
+            <div class="state-row"><span>Customer</span><b id="state-customer">—</b></div>
+            <div class="state-foot"><span class="pulse-ring"></span> This panel updates with the checkout</div>
+          </section>
+
+          <div class="privacy-note"><span class="lock-icon">⌑</span><span>Sample data only. No payment or personal data is sent.</span></div>
+        </aside>
+      </div>
+
+      <footer class="page-footer"><span>STILLHERE <span class="footer-dot">●</span> BUILT FOR THE MOMENT AFTER BACK</span><span class="footer-right">Verified by Kane CLI</span></footer>
+    </main>
+  </body>
+</html>
