@@ -4,6 +4,8 @@
 
 StillHere was built with OpenAI Codex. Its sample configuration uses Codex CLI as the repair agent; you can replace it with another command-line coding agent.
 
+[Demo video](https://youtu.be/xGbFkR8fm4A) (3 minutes 18 seconds): Kane CLI drives a real Chrome session, catches the checkout bug, Codex repairs it, and Kane confirms the fix.
+
 ## How it works
 
 1. StillHere starts the sample shop (or targets your running local app) and calls `kane-cli run` with the journey, URL, `--agent`, and a 300-second timeout.
@@ -15,7 +17,7 @@ The included Sonder Supply demo shop has an intentional bug: returning from Prod
 
 ## Requirements
 
-- macOS with Node.js 18 or later, npm, and Google Chrome.
+- Node.js 18+, npm, and Chrome; recorded on macOS.
 - Kane CLI installed and authenticated with a TestMu AI account. Kane keeps its OAuth credentials in its own profile under your home directory, outside this repository.
 - A command-line coding agent for automatic repair. The example `.env` uses Codex CLI; authenticate that tool separately. For manual repair, leave `STILLHERE_AGENT_COMMAND` empty and use the saved repair prompt.
 
@@ -36,19 +38,26 @@ curl -fsSL https://chatgpt.com/codex/install.sh | sh
 codex
 ```
 
-Then, after this repository is public, clone it and run the demo:
+Clone the repo and run the demo:
 
 ```sh
-git clone https://github.com/<owner>/stillhere.git
+git clone https://github.com/Mzee04/stillhere.git
 cd stillhere
 cp .env.example .env
-npm run demo:reset
 npm run demo:loop
 ```
 
-No `npm install` is needed in this repository; the app uses Node.js built-ins. The first command resets the shop to the saved Back/Refresh bug. `demo:loop` starts the shop, runs Kane, hands a failure to the configured agent, and reruns the same journey. The sample `.env` expects `codex` to be installed and authenticated. Change `STILLHERE_AGENT_COMMAND` in `.env` to use another agent; the command must read the repair prompt from stdin and be able to edit this project.
+No `npm install` is needed in this repository; the app uses Node.js built-ins. `demo:loop` restores the saved Back/Refresh bug first, then starts the shop, runs Kane, hands a failure to the configured agent, and reruns the same journey. The sample `.env` expects `codex` to be installed and authenticated. Change `STILLHERE_AGENT_COMMAND` in `.env` to use another agent; the command must read the repair prompt from stdin and be able to edit this project. To restore the broken shop on its own, run `npm run demo:reset`.
 
 The browser is visible by default. Set `KANE_HEADLESS=true` in `.env` only when running without a display.
+
+## For judges
+
+No credentials are included in this repository, and none are required to use the sample shop.
+
+Use your own TestMu AI account and `kane-cli login`, plus `codex login` for the automatic repair demo. Then run `npm run demo:loop`.
+
+If you can't run Kane or Codex, watch the demo: https://youtu.be/xGbFkR8fm4A
 
 ## Point it at your own app
 

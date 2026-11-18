@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "start": "node cli.mjs demo",
-    "demo:loop": "node cli.mjs demo-loop",
+    "demo:loop": "node scripts/reset-demo.mjs && node cli.mjs demo-loop",
     "demo:reset": "node scripts/reset-demo.mjs",
     "loop": "node cli.mjs loop",
     "test": "node --test"
