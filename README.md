@@ -4,7 +4,7 @@
 
 StillHere was built with OpenAI Codex. Its sample configuration uses Codex CLI as the repair agent; you can replace it with another command-line coding agent.
 
-[Demo video](https://youtu.be/xGbFkR8fm4A) (3 minutes 18 seconds): Kane CLI drives a real Chrome session, catches the checkout bug, Codex repairs it, and Kane confirms the fix.
+[Demo video](https://youtu.be/4R3yvR5oKvg) (3 minutes 18 seconds): Kane CLI drives a real Chrome session, catches the checkout bug, Codex repairs it, and Kane confirms the fix.
 
 ## How it works
 
@@ -57,7 +57,7 @@ No credentials are included in this repository, and none are required to use the
 
 Use your own TestMu AI account and `kane-cli login`, plus `codex login` for the automatic repair demo. Then run `npm run demo:loop`.
 
-If you can't run Kane or Codex, watch the demo: https://youtu.be/xGbFkR8fm4A
+If you can't run Kane or Codex, watch the demo: https://youtu.be/4R3yvR5oKvg
 
 ## Point it at your own app
 
