@@ -1,8 +1,11 @@
-import { copyFile, mkdir, readdir, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { basename, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { buildFailureReport, isPassingRun, makeRepairPrompt, parseNdjson, runKane } from "./kane.mjs";
+
+const SNAPSHOT_SKIP = new Set(["node_modules", ".git", ".stillhere"]);
 
 function nowTag() {
   return new Date().toISOString().replaceAll(":", "-").replaceAll(".", "-");
@@ -36,20 +39,114 @@ async function copyEvidence(result, artifactDir) {
   if (unzip.status === 0) result.evidenceExtractPath = extractPath;
 }
 
+function hashText(...parts) {
+  const hash = createHash("sha256");
+  for (const part of parts) hash.update(part);
+  return hash.digest("hex");
+}
+
+function snapshotGit(workdir) {
+  const status = spawnSync("git", ["status", "--porcelain", "--", "."], {
+    cwd: workdir,
+    encoding: "utf8",
+    timeout: 15_000,
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  if (status.error || status.status !== 0) return null;
+  const diff = spawnSync("git", ["diff", "--", "."], {
+    cwd: workdir,
+    encoding: "utf8",
+    timeout: 15_000,
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  if (diff.error || diff.status !== 0) return null;
+  return { kind: "git", hash: hashText(status.stdout ?? "", "\0", diff.stdout ?? "") };
+}
+
+async function snapshotFiles(root) {
+  const hash = createHash("sha256");
+  async function walk(dir, rel = "") {
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      if (SNAPSHOT_SKIP.has(entry.name)) continue;
+      const relative = rel ? `${rel}/${entry.name}` : entry.name;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        await walk(full, relative);
+        continue;
+      }
+      if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+      try {
+        const info = await stat(full);
+        hash.update(relative);
+        hash.update("\0");
+        hash.update(String(info.mtimeMs));
+        hash.update("\0");
+        hash.update(String(info.size));
+        hash.update("\n");
+      } catch {
+        // Skip paths that disappear mid-walk.
+      }
+    }
+  }
+  await walk(root);
+  return { kind: "files", hash: hash.digest("hex") };
+}
+
+export async function snapshotWorkdir(workdir) {
+  return snapshotGit(workdir) ?? await snapshotFiles(workdir);
+}
+
+function stopAgentProcess(child, signal, groupPid = child.pid) {
+  if (process.platform !== "win32" && groupPid) {
+    try {
+      process.kill(-groupPid, signal);
+      return;
+    } catch {
+      // The group may already be gone; fall back to the child.
+    }
+  }
+  try {
+    child.kill(signal);
+  } catch {
+    // The process may already have exited.
+  }
+}
+
 export function runAgentCommand(command, prompt, { cwd, timeoutMs = 300_000 } = {}) {
   return new Promise((resolvePromise) => {
-    const child = spawn(command, { cwd, shell: true, stdio: ["pipe", "pipe", "pipe"], env: process.env });
+    const child = spawn(command, {
+      cwd,
+      shell: true,
+      stdio: ["pipe", "pipe", "pipe"],
+      env: process.env,
+      detached: process.platform !== "win32",
+    });
+    const groupPid = child.pid;
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let timedOut = false;
+    let killTimer;
     const finish = (result) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (!timedOut) clearTimeout(killTimer);
       resolvePromise({ ...result, stdout, stderr });
     };
     const timer = setTimeout(() => {
-      child.kill("SIGTERM");
+      timedOut = true;
+      // Always follow SIGTERM with a group SIGKILL so descendants that
+      // ignore SIGTERM cannot keep running after the shell has already exited.
+      stopAgentProcess(child, "SIGTERM", groupPid);
+      killTimer = setTimeout(() => stopAgentProcess(child, "SIGKILL", groupPid), 5_000);
       finish({ exitCode: 124, error: "Coding agent exceeded the five minute timeout." });
     }, timeoutMs);
     child.stdout.on("data", (chunk) => { stdout += chunk.toString(); });
@@ -154,6 +251,7 @@ export async function runLoop({
     const prompt = makeRepairPrompt({ reportPath, report, projectPath: resolve(workdir) });
     await writeFile(join(artifactDir, "repair-prompt.md"), prompt, "utf8");
     onLine(`\n[StillHere] Sending Kane's failure evidence to the coding agent: ${agentCommand}`);
+    const beforeSnapshot = await snapshotWorkdir(workdir);
     const agentResult = await runAgentFn(agentCommand, prompt, { cwd: workdir });
     await Promise.all([
       writeFile(join(artifactDir, "agent.stdout.log"), agentResult.stdout ?? "", "utf8"),
@@ -163,6 +261,12 @@ export async function runLoop({
       onLine(`AFTER:  FAIL — coding agent exited with ${agentResult.exitCode}${agentResult.error ? `: ${agentResult.error}` : "."}`);
       onLine(`[StillHere] Agent logs are in ${artifactDir}.`);
       return { exitCode: agentResult.exitCode || 1, outcomes, firstFailure, final: normalized, reportPath, agentResult };
+    }
+    const afterSnapshot = await snapshotWorkdir(workdir);
+    if (beforeSnapshot.hash === afterSnapshot.hash) {
+      onLine("[StillHere] Coding agent made no changes. Skipping the re-run.");
+      onLine("AFTER:  NO CHANGES — the coding agent finished without editing the app, so Kane was not run again.");
+      return { exitCode: 1, outcomes, firstFailure, final: normalized, reportPath, agentResult, noChanges: true };
     }
     onLine("[StillHere] Coding agent finished. Re-running the unchanged Kane objective.");
   }
