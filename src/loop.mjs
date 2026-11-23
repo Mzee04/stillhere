@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { copyFile, mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -39,10 +40,45 @@ async function copyEvidence(result, artifactDir) {
   if (unzip.status === 0) result.evidenceExtractPath = extractPath;
 }
 
-function hashText(...parts) {
-  const hash = createHash("sha256");
-  for (const part of parts) hash.update(part);
-  return hash.digest("hex");
+function unquoteGitPath(raw) {
+  const value = raw.replace(/\r$/, "");
+  if (!value.startsWith('"') || !value.endsWith('"')) return value;
+  return value.slice(1, -1).replace(/\\([nrt\\"]|[0-7]{3})/g, (_, token) => {
+    if (token === "n") return "\n";
+    if (token === "r") return "\r";
+    if (token === "t") return "\t";
+    if (token === "\\") return "\\";
+    if (token === '"') return '"';
+    return String.fromCharCode(parseInt(token, 8));
+  });
+}
+
+function isSkippedSnapshotPath(relative) {
+  return relative.split("/").some((part) => SNAPSHOT_SKIP.has(part));
+}
+
+function untrackedPathsFromStatus(statusText) {
+  const paths = [];
+  for (const line of statusText.split("\n")) {
+    if (!line.startsWith("?? ")) continue;
+    const relative = unquoteGitPath(line.slice(3));
+    if (!isSkippedSnapshotPath(relative)) paths.push(relative);
+  }
+  return paths;
+}
+
+function listUntrackedFiles(workdir) {
+  const listed = spawnSync("git", ["ls-files", "--others", "--exclude-standard", "-z", "--", "."], {
+    cwd: workdir,
+    encoding: "utf8",
+    timeout: 15_000,
+    maxBuffer: 32 * 1024 * 1024,
+  });
+  if (listed.error || listed.status !== 0) return null;
+  return (listed.stdout ?? "")
+    .split("\0")
+    .filter(Boolean)
+    .filter((relative) => !isSkippedSnapshotPath(relative));
 }
 
 function snapshotGit(workdir) {
@@ -53,14 +89,33 @@ function snapshotGit(workdir) {
     maxBuffer: 32 * 1024 * 1024,
   });
   if (status.error || status.status !== 0) return null;
-  const diff = spawnSync("git", ["diff", "--", "."], {
+  // `git diff` (no HEAD) only shows unstaged worktree changes, so extra
+  // staged edits and already-untracked file edits would hash the same.
+  // Compare against HEAD, then hash untracked file contents too.
+  const diff = spawnSync("git", ["diff", "HEAD", "--", "."], {
     cwd: workdir,
     encoding: "utf8",
     timeout: 15_000,
     maxBuffer: 32 * 1024 * 1024,
   });
   if (diff.error || diff.status !== 0) return null;
-  return { kind: "git", hash: hashText(status.stdout ?? "", "\0", diff.stdout ?? "") };
+  const untracked = listUntrackedFiles(workdir) ?? untrackedPathsFromStatus(status.stdout ?? "");
+  const hash = createHash("sha256");
+  hash.update(status.stdout ?? "");
+  hash.update("\0");
+  hash.update(diff.stdout ?? "");
+  untracked.sort();
+  for (const relative of untracked) {
+    hash.update(relative);
+    hash.update("\0");
+    try {
+      hash.update(readFileSync(join(workdir, relative)));
+    } catch {
+      hash.update("missing");
+    }
+    hash.update("\n");
+  }
+  return { kind: "git", hash: hash.digest("hex") };
 }
 
 async function snapshotFiles(root) {
@@ -248,7 +303,7 @@ export async function runLoop({
       return { exitCode: 1, outcomes, firstFailure, final: normalized, reportPath };
     }
 
-    const prompt = makeRepairPrompt({ reportPath, report, projectPath: resolve(workdir) });
+    const prompt = makeRepairPrompt({ reportPath, report, projectPath: resolve(workdir), objective });
     await writeFile(join(artifactDir, "repair-prompt.md"), prompt, "utf8");
     onLine(`\n[StillHere] Sending Kane's failure evidence to the coding agent: ${agentCommand}`);
     const beforeSnapshot = await snapshotWorkdir(workdir);
