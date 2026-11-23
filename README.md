@@ -125,7 +125,8 @@ Copy `.env.example` to `.env`. It contains example settings, not credentials.
 - `KANE_HEADLESS`: `false` shows Chrome; set `true` for a headless machine.
 - `KANE_CLI_USER_AGENT`: caller label sent to Kane CLI (default `codex`).
 - `STILLHERE_MAX_ATTEMPTS`: total Kane runs in one loop (default `2`).
-- `STILLHERE_AGENT_COMMAND`: optional repair command. It receives the prompt on stdin and may edit the configured app directory.
+- `STILLHERE_AGENT_COMMAND`: optional repair command. It receives the prompt on stdin and may edit the configured app directory. StillHere runs this command with the system shell (`shell: true`). Treat it as trusted local input only — the same as a command you would type in your own terminal. Never set it from untrusted input, a web form, or Kane evidence.
+- The sample shop is a tiny local demo server and reads each static file into memory. That is enough for these assets; it is not a general-purpose file server.
 
 ## License
 

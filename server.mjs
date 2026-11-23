@@ -51,6 +51,8 @@ export function createDemoServer({ host = "127.0.0.1", port = Number(process.env
         response.end("Not found");
         return;
       }
+      // The demo shop only serves a few tiny static files, so reading each
+      // request into memory is enough. A streaming file server is unnecessary here.
       const body = await readFile(filePath);
       response.writeHead(200, {
         "content-type": mimeTypes[extname(filePath)] || "application/octet-stream",

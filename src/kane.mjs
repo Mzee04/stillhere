@@ -1,4 +1,16 @@
 import { spawn } from "node:child_process";
+import { constants as osConstants } from "node:os";
+
+// Node reports code=null when a process is killed by a signal. Map that to
+// the conventional 128 + signal number so callers always receive a number.
+export function normalizeChildExitCode(code, signal) {
+  if (code != null) return code;
+  if (signal) {
+    const number = osConstants.signals[signal];
+    return 128 + (Number.isInteger(number) ? number : 0);
+  }
+  return 128;
+}
 
 export const DEFAULT_OBJECTIVE = `On the StillHere sample shop, start by clicking “Reset demo”. Add the Sonder travel mug to the cart and continue checkout. Enter customer name “Amina Bello” and email “amina@example.com”, choose Standard delivery, and continue to Review order. Verify the review shows Amina Bello, amina@example.com, one Sonder travel mug, and total $34.00. Open Product details, then use Back to checkout to return to the review. Verify the current step is still Review order and the same customer, item, quantity, and total remain. Click Refresh and verify the review step and those same values are still present. Report any value that is missing or changed as a failure.`;
 
@@ -204,7 +216,7 @@ export function runKane({
           // Keep the raw output for diagnosis.
         }
       }
-      finish({ exitCode: code ?? (signal ? null : 128), signal });
+      finish({ exitCode: normalizeChildExitCode(code, signal), signal });
     });
   });
 }

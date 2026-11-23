@@ -16,7 +16,25 @@ function cleanSegment(value) {
   return basename(value).replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
-async function copyEvidence(result, artifactDir) {
+function isMaxBufferError(result) {
+  const code = result?.error?.code;
+  return code === "ENOBUFS" || code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER";
+}
+
+const DEFAULT_GIT_MAX_BUFFER = 256 * 1024 * 1024;
+
+function overflowSnapshot(message, warn) {
+  warn(`[StillHere] ${message}`);
+  return {
+    kind: "git-overflow",
+    overflow: true,
+    // A unique hash so two overflowed snapshots cannot compare equal and
+    // be treated as "the agent made no changes."
+    hash: `overflow:${process.hrtime.bigint().toString()}:${Math.random().toString(16).slice(2)}`,
+  };
+}
+
+export async function copyEvidence(result, artifactDir, { warn = console.warn } = {}) {
   const sessionDir = result.runEnd?.session_dir;
   if (!sessionDir) return;
   const expandedSessionDir = sessionDir.startsWith("~/") ? join(homedir(), sessionDir.slice(2)) : sessionDir;
@@ -24,20 +42,30 @@ async function copyEvidence(result, artifactDir) {
   let files;
   try {
     files = (await readdir(evidenceDir)).filter((file) => file.endsWith(".evidence"));
-  } catch {
+  } catch (error) {
+    warn(`[StillHere] Could not read Kane evidence in ${evidenceDir}: ${error.message}`);
     return;
   }
-  if (!files.length) return;
+  if (!files.length) {
+    warn(`[StillHere] No .evidence pack was found in ${evidenceDir}.`);
+    return;
+  }
   const packPath = join(artifactDir, files[0]);
   try {
     await copyFile(join(evidenceDir, files[0]), packPath);
-  } catch {
+  } catch (error) {
+    warn(`[StillHere] Could not copy Kane evidence pack: ${error.message}`);
     return;
   }
   result.evidenceCopyPath = packPath;
   const extractPath = join(artifactDir, "evidence-extracted");
   const unzip = spawnSync("unzip", ["-q", "-o", packPath, "-d", extractPath], { encoding: "utf8", timeout: 15_000 });
-  if (unzip.status === 0) result.evidenceExtractPath = extractPath;
+  if (unzip.error || unzip.status !== 0) {
+    const detail = unzip.error?.message || (unzip.stderr || "").trim() || `exit ${unzip.status}`;
+    warn(`[StillHere] Could not unzip Kane evidence pack: ${detail}`);
+    return;
+  }
+  result.evidenceExtractPath = extractPath;
 }
 
 function unquoteGitPath(raw) {
@@ -67,13 +95,18 @@ function untrackedPathsFromStatus(statusText) {
   return paths;
 }
 
-function listUntrackedFiles(workdir) {
-  const listed = spawnSync("git", ["ls-files", "--others", "--exclude-standard", "-z", "--", "."], {
+function runGit(workdir, args, maxBuffer) {
+  return spawnSync("git", args, {
     cwd: workdir,
     encoding: "utf8",
     timeout: 15_000,
-    maxBuffer: 32 * 1024 * 1024,
+    maxBuffer,
   });
+}
+
+function listUntrackedFiles(workdir, maxBuffer) {
+  const listed = runGit(workdir, ["ls-files", "--others", "--exclude-standard", "-z", "--", "."], maxBuffer);
+  if (isMaxBufferError(listed)) return { overflow: true, result: listed };
   if (listed.error || listed.status !== 0) return null;
   return (listed.stdout ?? "")
     .split("\0")
@@ -81,31 +114,31 @@ function listUntrackedFiles(workdir) {
     .filter((relative) => !isSkippedSnapshotPath(relative));
 }
 
-function snapshotGit(workdir) {
-  const status = spawnSync("git", ["status", "--porcelain", "--", "."], {
-    cwd: workdir,
-    encoding: "utf8",
-    timeout: 15_000,
-    maxBuffer: 32 * 1024 * 1024,
-  });
+function snapshotGit(workdir, { maxBuffer = DEFAULT_GIT_MAX_BUFFER, warn = console.warn } = {}) {
+  const status = runGit(workdir, ["status", "--porcelain", "--", "."], maxBuffer);
+  if (isMaxBufferError(status)) {
+    return overflowSnapshot(`git status output exceeded the ${maxBuffer}-byte snapshot buffer. Kane will be re-run to avoid a false "no changes" result.`, warn);
+  }
   if (status.error || status.status !== 0) return null;
   // `git diff` (no HEAD) only shows unstaged worktree changes, so extra
   // staged edits and already-untracked file edits would hash the same.
   // Compare against HEAD, then hash untracked file contents too.
-  const diff = spawnSync("git", ["diff", "HEAD", "--", "."], {
-    cwd: workdir,
-    encoding: "utf8",
-    timeout: 15_000,
-    maxBuffer: 32 * 1024 * 1024,
-  });
+  const diff = runGit(workdir, ["diff", "HEAD", "--", "."], maxBuffer);
+  if (isMaxBufferError(diff)) {
+    return overflowSnapshot(`git diff output exceeded the ${maxBuffer}-byte snapshot buffer. Kane will be re-run to avoid a false "no changes" result.`, warn);
+  }
   if (diff.error || diff.status !== 0) return null;
-  const untracked = listUntrackedFiles(workdir) ?? untrackedPathsFromStatus(status.stdout ?? "");
+  const untracked = listUntrackedFiles(workdir, maxBuffer);
+  if (untracked && untracked.overflow) {
+    return overflowSnapshot(`git ls-files output exceeded the ${maxBuffer}-byte snapshot buffer. Kane will be re-run to avoid a false "no changes" result.`, warn);
+  }
+  const files = untracked ?? untrackedPathsFromStatus(status.stdout ?? "");
   const hash = createHash("sha256");
   hash.update(status.stdout ?? "");
   hash.update("\0");
   hash.update(diff.stdout ?? "");
-  untracked.sort();
-  for (const relative of untracked) {
+  files.sort();
+  for (const relative of files) {
     hash.update(relative);
     hash.update("\0");
     try {
@@ -154,8 +187,8 @@ async function snapshotFiles(root) {
   return { kind: "files", hash: hash.digest("hex") };
 }
 
-export async function snapshotWorkdir(workdir) {
-  return snapshotGit(workdir) ?? await snapshotFiles(workdir);
+export async function snapshotWorkdir(workdir, options = {}) {
+  return snapshotGit(workdir, options) ?? await snapshotFiles(workdir);
 }
 
 function stopAgentProcess(child, signal, groupPid = child.pid) {
@@ -221,7 +254,9 @@ export async function runLoop({
   reportRoot = join(workdir, ".stillhere", "runs"),
   runKaneFn = runKane,
   runAgentFn = runAgentCommand,
+  snapshotWorkdirFn = snapshotWorkdir,
   onLine = (line) => console.log(line),
+  warn = console.warn,
 }) {
   const outcomes = [];
   const boundedAttempts = Math.max(1, Number(maxAttempts) || 2);
@@ -265,7 +300,7 @@ export async function runLoop({
     const tag = `${nowTag()}-attempt-${attempt}`;
     const artifactDir = join(reportRoot, cleanSegment(tag));
     await mkdir(artifactDir, { recursive: true });
-    await copyEvidence(normalized, artifactDir);
+    await copyEvidence(normalized, artifactDir, { warn });
     const reportPath = join(artifactDir, "failure-report.md");
     const report = buildFailureReport({ objective, url, attempt, result: normalized });
     await Promise.all([
@@ -306,7 +341,7 @@ export async function runLoop({
     const prompt = makeRepairPrompt({ reportPath, report, projectPath: resolve(workdir), objective });
     await writeFile(join(artifactDir, "repair-prompt.md"), prompt, "utf8");
     onLine(`\n[StillHere] Sending Kane's failure evidence to the coding agent: ${agentCommand}`);
-    const beforeSnapshot = await snapshotWorkdir(workdir);
+    const beforeSnapshot = await snapshotWorkdirFn(workdir);
     const agentResult = await runAgentFn(agentCommand, prompt, { cwd: workdir });
     await Promise.all([
       writeFile(join(artifactDir, "agent.stdout.log"), agentResult.stdout ?? "", "utf8"),
@@ -317,11 +352,16 @@ export async function runLoop({
       onLine(`[StillHere] Agent logs are in ${artifactDir}.`);
       return { exitCode: agentResult.exitCode || 1, outcomes, firstFailure, final: normalized, reportPath, agentResult };
     }
-    const afterSnapshot = await snapshotWorkdir(workdir);
-    if (beforeSnapshot.hash === afterSnapshot.hash) {
+    const afterSnapshot = await snapshotWorkdirFn(workdir);
+    // An overflowed snapshot uses a unique hash, and is also flagged, so it
+    // cannot be mistaken for "the agent made no changes."
+    if (!beforeSnapshot.overflow && !afterSnapshot.overflow && beforeSnapshot.hash === afterSnapshot.hash) {
       onLine("[StillHere] Coding agent made no changes. Skipping the re-run.");
       onLine("AFTER:  NO CHANGES — the coding agent finished without editing the app, so Kane was not run again.");
       return { exitCode: 1, outcomes, firstFailure, final: normalized, reportPath, agentResult, noChanges: true };
+    }
+    if (beforeSnapshot.overflow || afterSnapshot.overflow) {
+      onLine("[StillHere] Workdir snapshot was too large to hash completely. Re-running Kane to avoid missing a change.");
     }
     onLine("[StillHere] Coding agent finished. Re-running the unchanged Kane objective.");
   }

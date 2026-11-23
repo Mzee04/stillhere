@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm, writeFile, utimes } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile, utimes } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { buildFailureReport, getRunEnd, isPassingRun, makeRepairPrompt, parseNdjson, runKane } from "../src/kane.mjs";
-import { runAgentCommand, runLoop, snapshotWorkdir } from "../src/loop.mjs";
+import { buildFailureReport, getRunEnd, isPassingRun, makeRepairPrompt, normalizeChildExitCode, parseNdjson, runKane } from "../src/kane.mjs";
+import { copyEvidence, runAgentCommand, runLoop as runLoopImpl, snapshotWorkdir } from "../src/loop.mjs";
+
+function runLoop(options) {
+  return runLoopImpl({ warn() {}, ...options });
+}
 
 function failureResult() {
   const events = [
@@ -39,6 +43,13 @@ async function waitUntil(predicate, timeoutMs, message) {
   throw new Error(message);
 }
 
+
+async function makeTempDir(t, prefix) {
+  const workdir = await mkdtemp(join(tmpdir(), prefix));
+  t.after(() => rm(workdir, { recursive: true, force: true }));
+  return workdir;
+}
+
 test("parseNdjson skips malformed output and finds the final run_end", () => {
   const events = parseNdjson('{"step":1,"status":"done"}\nnot json\n{"type":"run_end","status":"passed"}\n');
   assert.equal(events.length, 2);
@@ -55,8 +66,7 @@ test("failure report carries failed steps, final state, and Kane evidence locati
 });
 
 test("loop hands the Kane failure to an agent and reruns the unchanged objective", async (t) => {
-  const workdir = await mkdtemp(join(tmpdir(), "stillhere-loop-"));
-  t.after(() => rm(workdir, { recursive: true, force: true }));
+  const workdir = await makeTempDir(t, "stillhere-loop-");
   const outputs = [];
   const objectives = [];
   let runCount = 0;
@@ -94,8 +104,7 @@ test("loop hands the Kane failure to an agent and reruns the unchanged objective
 });
 
 test("loop stops with a handoff report when no coding agent command is configured", async (t) => {
-  const workdir = await mkdtemp(join(tmpdir(), "stillhere-handoff-"));
-  t.after(() => rm(workdir, { recursive: true, force: true }));
+  const workdir = await makeTempDir(t, "stillhere-handoff-");
   let runCount = 0;
   const result = await runLoop({
     url: "http://127.0.0.1:4173/",
@@ -111,8 +120,7 @@ test("loop stops with a handoff report when no coding agent command is configure
 });
 
 test("loop skips the Kane re-run when the coding agent makes no changes", async (t) => {
-  const workdir = await mkdtemp(join(tmpdir(), "stillhere-nochange-"));
-  t.after(() => rm(workdir, { recursive: true, force: true }));
+  const workdir = await makeTempDir(t, "stillhere-nochange-");
   const outputs = [];
   let runCount = 0;
   const result = await runLoop({
@@ -139,8 +147,7 @@ test("loop skips the Kane re-run when the coding agent makes no changes", async 
 });
 
 test("loop reruns Kane after a git workdir edit and skips when git sees no change", async (t) => {
-  const workdir = await mkdtemp(join(tmpdir(), "stillhere-git-"));
-  t.after(() => rm(workdir, { recursive: true, force: true }));
+  const workdir = await makeTempDir(t, "stillhere-git-");
   await writeFile(join(workdir, "app.js"), "const n = 1;\n", "utf8");
   const gitOpts = { cwd: workdir, encoding: "utf8" };
   assert.equal(spawnSync("git", ["init"], gitOpts).status, 0);
@@ -198,8 +205,7 @@ test("loop reruns Kane after a git workdir edit and skips when git sees no chang
 });
 
 test("runAgentCommand kills the whole process group on timeout", async (t) => {
-  const workdir = await mkdtemp(join(tmpdir(), "stillhere-timeout-"));
-  t.after(() => rm(workdir, { recursive: true, force: true }));
+  const workdir = await makeTempDir(t, "stillhere-timeout-");
   const pidFile = join(workdir, "child.pid");
   const script = join(workdir, "hang.mjs");
   await writeFile(script, `
@@ -245,8 +251,7 @@ function initGitRepo(workdir) {
 }
 
 test("snapshotWorkdir detects edits to already-untracked files and already-staged changes", async (t) => {
-  const workdir = await mkdtemp(join(tmpdir(), "stillhere-snap-"));
-  t.after(() => rm(workdir, { recursive: true, force: true }));
+  const workdir = await makeTempDir(t, "stillhere-snap-");
   await writeFile(join(workdir, "app.js"), "const n = 1;\n", "utf8");
   const gitOpts = initGitRepo(workdir);
 
@@ -267,8 +272,7 @@ test("snapshotWorkdir detects edits to already-untracked files and already-stage
 });
 
 test("loop reruns Kane when the agent only edits an already-untracked file", async (t) => {
-  const workdir = await mkdtemp(join(tmpdir(), "stillhere-untracked-edit-"));
-  t.after(() => rm(workdir, { recursive: true, force: true }));
+  const workdir = await makeTempDir(t, "stillhere-untracked-edit-");
   await writeFile(join(workdir, "app.js"), "const n = 1;\n", "utf8");
   initGitRepo(workdir);
   await writeFile(join(workdir, "notes.js"), "draft\n", "utf8");
@@ -348,8 +352,7 @@ test("repair prompt treats Kane evidence as untrusted and wraps injected instruc
 });
 
 test("Kane watchdog kills the whole process group on timeout", async (t) => {
-  const workdir = await mkdtemp(join(tmpdir(), "stillhere-kane-watchdog-"));
-  t.after(() => rm(workdir, { recursive: true, force: true }));
+  const workdir = await makeTempDir(t, "stillhere-kane-watchdog-");
   const pidFile = join(workdir, "child.pid");
   const wrapper = join(workdir, "fake-kane");
   await writeFile(wrapper, `#!/usr/bin/env node
@@ -388,4 +391,105 @@ if (process.argv.includes("child")) {
   assert.ok(Number.isInteger(childPid) && childPid > 0, "grandchild pid should be recorded");
   await waitUntil(() => !isAlive(childPid), 12_000, `grandchild pid ${childPid} was still running after the process-group kill`);
   assert.equal(isAlive(childPid), false);
+});
+
+test("copyEvidence warns when the evidence pack is missing or cannot be unzipped", async (t) => {
+  const workdir = await makeTempDir(t, "stillhere-evidence-");
+  const artifactDir = join(workdir, "artifacts");
+  await mkdir(artifactDir, { recursive: true });
+  const warnings = [];
+  const warn = (message) => warnings.push(message);
+
+  const missing = {};
+  await copyEvidence({ runEnd: { session_dir: join(workdir, "absent-session") } }, artifactDir, { warn });
+  assert.match(warnings.join("\n"), /Could not read Kane evidence/);
+
+  const sessionDir = join(workdir, "kane-session");
+  await mkdir(join(sessionDir, "evidence"), { recursive: true });
+  warnings.length = 0;
+  await copyEvidence({ runEnd: { session_dir: sessionDir } }, artifactDir, { warn });
+  assert.match(warnings.join("\n"), /No \.evidence pack was found/);
+
+  await writeFile(join(sessionDir, "evidence", "run.evidence"), "this is not a zip file\n", "utf8");
+  warnings.length = 0;
+  const result = { runEnd: { session_dir: sessionDir } };
+  await copyEvidence(result, artifactDir, { warn });
+  assert.equal(result.evidenceCopyPath, join(artifactDir, "run.evidence"));
+  assert.equal(result.evidenceExtractPath, undefined);
+  assert.match(warnings.join("\n"), /Could not unzip Kane evidence pack/);
+});
+
+test("snapshot overflow warns and does not compare equal to another overflow", async (t) => {
+  const workdir = await makeTempDir(t, "stillhere-overflow-");
+  await writeFile(join(workdir, "app.js"), `const n = 1; // ${"x".repeat(200)}\n`, "utf8");
+  initGitRepo(workdir);
+  await writeFile(join(workdir, "app.js"), `const n = 2; // ${"y".repeat(200)}\n`, "utf8");
+  const warnings = [];
+  const first = await snapshotWorkdir(workdir, { maxBuffer: 16, warn: (message) => warnings.push(message) });
+  const second = await snapshotWorkdir(workdir, { maxBuffer: 16, warn: (message) => warnings.push(message) });
+  assert.equal(first.overflow, true);
+  assert.equal(second.overflow, true);
+  assert.notEqual(first.hash, second.hash);
+  assert.match(warnings.join("\n"), /exceeded the 16-byte snapshot buffer/);
+});
+
+test("loop reruns Kane when a workdir snapshot overflows", async (t) => {
+  const workdir = await makeTempDir(t, "stillhere-overflow-loop-");
+  await writeFile(join(workdir, "app.js"), "const n = 1;\n", "utf8");
+  initGitRepo(workdir);
+  const outputs = [];
+  let runCount = 0;
+  let snapshots = 0;
+  const result = await runLoop({
+    url: "http://127.0.0.1:4173/",
+    objective: "same exact objective",
+    maxAttempts: 2,
+    agentCommand: "mock-agent",
+    workdir,
+    reportRoot: join(workdir, ".stillhere", "runs"),
+    onLine: (line) => outputs.push(line),
+    snapshotWorkdirFn: async () => {
+      snapshots += 1;
+      return { kind: "git-overflow", overflow: true, hash: "overflow-same-on-purpose" };
+    },
+    runKaneFn: async () => {
+      runCount += 1;
+      return runCount === 1 ? failureResult() : passingResult();
+    },
+    runAgentFn: async () => ({ exitCode: 0, stdout: "looked around", stderr: "" }),
+  });
+  assert.equal(result.exitCode, 0);
+  assert.equal(runCount, 2);
+  assert.equal(snapshots, 2);
+  assert.equal(result.noChanges, undefined);
+  assert.match(outputs.join("\n"), /too large to hash completely/);
+});
+
+test("normalizeChildExitCode maps signals to 128 + signal number", () => {
+  assert.equal(normalizeChildExitCode(0, null), 0);
+  assert.equal(normalizeChildExitCode(1, null), 1);
+  assert.equal(normalizeChildExitCode(null, "SIGTERM"), 143);
+  assert.equal(normalizeChildExitCode(null, "SIGKILL"), 137);
+  assert.equal(normalizeChildExitCode(null, null), 128);
+});
+
+test("runKane reports 128+signal when the Kane process is killed", async (t) => {
+  const workdir = await makeTempDir(t, "stillhere-signal-exit-");
+  const wrapper = join(workdir, "sig-kane");
+  await writeFile(wrapper, `#!/usr/bin/env node
+process.kill(process.pid, "SIGTERM");
+setInterval(() => {}, 1000);
+`, "utf8");
+  await chmod(wrapper, 0o755);
+  const result = await runKane({
+    objective: "open the shop",
+    url: "http://127.0.0.1:4173/",
+    kaneCli: wrapper,
+    timeoutSeconds: 20,
+    watchdogGraceSeconds: 20,
+    cwd: workdir,
+  });
+  assert.equal(result.signal, "SIGTERM");
+  assert.equal(result.exitCode, 143);
+  assert.notEqual(result.exitCode, null);
 });

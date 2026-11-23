@@ -1,6 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseEnvContent } from "./src/env.mjs";
 import { DEFAULT_OBJECTIVE } from "./src/kane.mjs";
 import { runLoop } from "./src/loop.mjs";
 import { listenDemoServer } from "./server.mjs";
@@ -10,16 +11,8 @@ const projectRoot = resolve(fileURLToPath(new URL(".", import.meta.url)));
 async function loadEnvFile() {
   try {
     const content = await readFile(resolve(projectRoot, ".env"), "utf8");
-    for (const line of content.split(/\r?\n/)) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      const separator = trimmed.indexOf("=");
-      if (separator < 1) continue;
-      const key = trimmed.slice(0, separator).trim();
-      let value = trimmed.slice(separator + 1).trim();
-      if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-        value = value.slice(1, -1);
-      }
+    const parsed = parseEnvContent(content);
+    for (const [key, value] of Object.entries(parsed)) {
       if (process.env[key] === undefined) process.env[key] = value;
     }
   } catch (error) {
